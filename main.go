@@ -43,8 +43,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	api.SetStore(store)
-
 	defer store.Close()
 
 	port := getPort()
@@ -53,9 +51,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.Dir(webDir)))
 	mux.HandleFunc("/api/nextdate", api.NextDateHandler)
-	mux.HandleFunc("/api/task", signin.Auth(api.TaskHandler))
-	mux.HandleFunc("/api/tasks", signin.Auth(api.TasksHandler))
-	mux.HandleFunc("/api/task/done", signin.Auth(api.TaskDoneHandler))
+	mux.HandleFunc("/api/task", signin.Auth(api.TaskHandler(store)))
+	mux.HandleFunc("/api/tasks", signin.Auth(api.TasksHandler(store)))
+	mux.HandleFunc("/api/task/done", signin.Auth(api.TaskDoneHandler(store)))
 	mux.HandleFunc("/api/signin", signin.SignInHandler)
 
 	err = http.ListenAndServe(":"+strconv.Itoa(port), mux)

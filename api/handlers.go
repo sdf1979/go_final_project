@@ -1,8 +1,10 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,12 +12,6 @@ import (
 	constVal "github.com/sdf1979/go_final_project/const"
 	"github.com/sdf1979/go_final_project/db"
 )
-
-var store *db.Store
-
-func SetStore(storeIn *db.Store) {
-	store = storeIn
-}
 
 func NextDateHandler(writer http.ResponseWriter, request *http.Request) {
 	now := request.FormValue("now")
@@ -37,56 +33,61 @@ func NextDateHandler(writer http.ResponseWriter, request *http.Request) {
 	writer.Write([]byte(nextDate))
 }
 
-func TaskHandler(writer http.ResponseWriter, request *http.Request) {
-	if store == nil {
-		http.Error(writer, "Store not initialized", http.StatusInternalServerError)
-		return
-	}
-
-	switch request.Method {
-	case "POST":
-		taskPost(writer, request)
-	case "GET":
-		taskGet(writer, request)
-	case "PUT":
-		taskPut(writer, request)
-	case "DELETE":
-		taskDelete(writer, request)
+func TaskHandler(store *db.Store) func(writer http.ResponseWriter, request *http.Request) {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodPost:
+			taskPost(writer, request, store)
+		case http.MethodGet:
+			taskGet(writer, request, store)
+		case http.MethodPut:
+			taskPut(writer, request, store)
+		case http.MethodDelete:
+			taskDelete(writer, request, store)
+		default:
+			http.Error(writer, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		}
 	}
 }
 
-func TasksHandler(writer http.ResponseWriter, request *http.Request) {
-	if store == nil {
-		http.Error(writer, "Store not initialized", http.StatusInternalServerError)
-		return
+func TasksHandler(store *db.Store) func(writer http.ResponseWriter, request *http.Request) {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		tasksGet(writer, request, store)
 	}
-
-	tasksGet(writer, request)
 }
 
-func TaskDoneHandler(writer http.ResponseWriter, request *http.Request) {
-	if store == nil {
-		http.Error(writer, "Store not initialized", http.StatusInternalServerError)
-		return
-	}
+func TaskDoneHandler(store *db.Store) func(writer http.ResponseWriter, request *http.Request) {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		searchId := request.URL.Query().Get("id")
+		if searchId == "" {
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - empty task id:"))
+			return
+		}
 
-	searchId := request.URL.Query().Get("id")
-	if searchId != "" {
 		id, err := strconv.ParseInt(searchId, 10, 64)
 		if err != nil {
-			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - invalid task id: "+err.Error()))
+			fmt.Println("task done - invalid task id: " + err.Error())
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 			return
 		}
 
 		task, err := store.GetTasksById(id)
 		if err != nil {
-			responseWithJson(writer, http.StatusNotFound, formatErrorForFrontend("task done - task not found: "+err.Error()))
+			if err == sql.ErrConnDone {
+				responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+			} else {
+				responseWithJson(writer, http.StatusNotFound, formatErrorForFrontend("task done - task not found: "+err.Error()))
+			}
 			return
 		}
 
 		if task.Repeat == "" {
 			if err := store.DeleteTask(task.Id); err != nil {
-				responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - delete error: "+err.Error()))
+				if err == sql.ErrConnDone {
+					responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+				} else {
+					responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - delete error: "+err.Error()))
+				}
 				return
 			}
 		} else {
@@ -97,17 +98,19 @@ func TaskDoneHandler(writer http.ResponseWriter, request *http.Request) {
 			}
 			task.Date = nextDate
 			if err := store.UpdateTask(&task); err != nil {
-				responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - update error: "+err.Error()))
+				if err == sql.ErrConnDone {
+					responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+				} else {
+					responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - update error: "+err.Error()))
+				}
 				return
 			}
 		}
 		responseWithJson(writer, http.StatusOK, make(map[string]string))
-		return
 	}
-	responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task done - empty task id:"))
 }
 
-func taskPost(writer http.ResponseWriter, request *http.Request) {
+func taskPost(writer http.ResponseWriter, request *http.Request, store *db.Store) {
 	var task db.Task
 	if err := json.NewDecoder(request.Body).Decode(&task); err != nil {
 		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend(err.Error()))
@@ -115,19 +118,25 @@ func taskPost(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	if err := validateTask(&task); err != nil {
-		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("failed to validate task: "+err.Error()))
+		fmt.Println("failed to validate task: " + err.Error())
+		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 		return
 	}
 
 	if err := store.CreateTask(&task); err != nil {
-		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("failed to create task: "+err.Error()))
+		if err == sql.ErrConnDone {
+			responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+		} else {
+			fmt.Println("failed to create task: " + err.Error())
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
+		}
 		return
 	}
 
 	responseWithJson(writer, http.StatusCreated, formatTaskForFrontend(&task))
 }
 
-func tasksGet(writer http.ResponseWriter, request *http.Request) {
+func tasksGet(writer http.ResponseWriter, request *http.Request, store *db.Store) {
 	var tasks []db.Task
 	var errTasks error = nil
 
@@ -144,72 +153,97 @@ func tasksGet(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	if errTasks != nil {
-		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend(errTasks.Error()))
+		if errTasks == sql.ErrConnDone {
+			responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(errTasks.Error()))
+		} else {
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend(errTasks.Error()))
+		}
+		return
 	}
 
 	responseWithJson(writer, http.StatusOK, formatTasksForFrontend(tasks))
 }
 
-func taskGet(writer http.ResponseWriter, request *http.Request) {
+func taskGet(writer http.ResponseWriter, request *http.Request, store *db.Store) {
 	searchId := request.URL.Query().Get("id")
 	if searchId != "" {
 		id, err := strconv.ParseInt(searchId, 10, 64)
 		if err != nil {
-			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task get - invalid task id: "+err.Error()))
+			fmt.Println("task get - invalid task id: " + err.Error())
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 			return
 		}
 
 		task, err := store.GetTasksById(id)
 		if err != nil {
-			responseWithJson(writer, http.StatusNotFound, formatErrorForFrontend("task get - task not found: "+err.Error()))
+			if err == sql.ErrConnDone {
+				responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+			} else {
+				fmt.Println("task get - task not found: " + err.Error())
+				responseWithJson(writer, http.StatusNotFound, formatErrorForFrontend("Bad request"))
+			}
 			return
 		}
 		responseWithJson(writer, http.StatusOK, formatTaskForFrontend(&task))
 		return
 	}
 
-	responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task get - no param: "))
+	responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task get - no param:"))
 }
 
-func taskPut(writer http.ResponseWriter, request *http.Request) {
+func taskPut(writer http.ResponseWriter, request *http.Request, store *db.Store) {
 	var taskFrontend db.TaskFrontend
 	if err := json.NewDecoder(request.Body).Decode(&taskFrontend); err != nil {
-		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task put - decoding error: "+err.Error()))
+		fmt.Println("task put - decoding error: " + err.Error())
+		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 		return
 	}
 
 	task := taskFrontend.ToTask()
 	if err := validateTask(&task); err != nil {
-		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task put - failed to validate task: "+err.Error()))
+		fmt.Println("task put - failed to validate task: " + err.Error())
+		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 		return
 	}
 
 	if err := store.UpdateTask(&task); err != nil {
-		responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task put - update error: "+err.Error()))
+		if err == sql.ErrConnDone {
+			responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+		} else {
+			fmt.Println("task put - update error: " + err.Error())
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
+		}
 		return
 	}
 
 	responseWithJson(writer, http.StatusOK, make(map[string]string))
 }
 
-func taskDelete(writer http.ResponseWriter, request *http.Request) {
+func taskDelete(writer http.ResponseWriter, request *http.Request, store *db.Store) {
 	searchId := request.URL.Query().Get("id")
 	if searchId != "" {
 		id, err := strconv.ParseInt(searchId, 10, 64)
 		if err != nil {
-			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task delete - invalid task id: "+err.Error()))
+			fmt.Println("task delete - invalid task id: " + err.Error())
+			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 			return
 		}
 
 		if err := store.DeleteTask(id); err != nil {
-			responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task delete - delete error: "+err.Error()))
+			if err == sql.ErrConnDone {
+				responseWithJson(writer, http.StatusInternalServerError, formatErrorForFrontend(err.Error()))
+			} else {
+				fmt.Println("task delete - delete error: " + err.Error())
+				responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
+			}
 			return
 		}
 
 		responseWithJson(writer, http.StatusOK, make(map[string]string))
 		return
 	}
-	responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("task delete - empty task id:"))
+	fmt.Println("task delete - empty task id:")
+	responseWithJson(writer, http.StatusBadRequest, formatErrorForFrontend("Bad request"))
 }
 
 func validateTask(task *db.Task) error {

@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 
@@ -48,7 +49,7 @@ func Open(dbFile string) (*Store, error) {
 	_, err_install := os.Stat(dbFile)
 	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error while open db %s: %w", dbFile, err)
 	}
 	store := &Store{db: db}
 	if err_install != nil {
